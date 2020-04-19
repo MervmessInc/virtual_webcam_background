@@ -3,33 +3,30 @@
 import tensorflow as tf
 import cv2
 import sys
-from PIL import Image
 import tfjs_graph_converter as tfjs
 import numpy as np
 import os
 import stat
 import glob
 import yaml
+import time
 from pyfakewebcam import FakeWebcam
 
 from bodypix_functions import calc_padding
 from bodypix_functions import scale_and_crop_to_input_tensor_shape
 from bodypix_functions import to_input_resolution_height_and_width
 from bodypix_functions import to_mask_tensor
+import filters
 
 # Default config values
 config = {
-    # Will be replaced by the mtime of the config
-    "mtime": 0,
-    # Will be replaced by the mtime of the background
-    "replacement_mtime": 0,
     "width": None,
     "height": None,
     "erode": 0,
     "blur": 0,
     "segmentation_threshold": 0.75,
     "blur_background": 0,
-    "image_name": "background.jpg",
+    "background_image": "background.jpg",
     "virtual_video_device": "/dev/video2",
     "real_video_device": "/dev/video0",
     "average_masks": 3
@@ -50,68 +47,99 @@ def load_config(oldconfig):
                 for key in yconfig:
                     config[key] = yconfig[key]
             # Force image reload
-            config["replacement_mtime"] = 0
+            for key in config:
+                if key.endswith("_mtime"):
+                    config[key] = 0
     except OSError:
         pass
     return config
 
-def load_replacement_bgs(replacement_bgs, image_name,
-        height, width, image_filters=[]):
+def load_images(images, image_name, height, width, imageset_name,
+        interpolation_method="NEAREST", image_filters=[]):
     """
-        Load and preprocess the background image(s)
+        Load and preprocess image(s)
         image_name must be either the path to an image file or
         the path to an folder containing multiple files that should be
         played as animation.
+        imageset_name is an unique name that is used in the config to store
+        values like the mtime
         The function only reloads the image(s) when the mtime of the file
         or folder is changed.
     """
     try:
         replacement_stat = os.stat(image_name)
-        if replacement_stat.st_mtime != config.get("replacement_mtime"):
-            print("Loading background {0} ...".format(image_name))
-            replacement_bgs_idx = 0
+        if replacement_stat.st_mtime != config.get(imageset_name + "_mtime"):
+            print("Loading images {0} ...".format(image_name))
+            config[imageset_name + "_idx"] = 0
             filenames = [image_name]
             if stat.S_ISDIR(replacement_stat.st_mode):
                 filenames = glob.glob(filenames[0] + "/*.*")
                 if not filenames:
                     return None
 
-            replacement_bgs = []
+            images = []
             for filename in filenames:
-                replacement_bg_raw = cv2.imread(filename)
+                image_raw = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
                 interpolation_method = cv2.INTER_LINEAR
-                if config.get("background_interpolation_method") == "NEAREST":
+                if interpolation_method == "NEAREST":
                     interpolation_method = cv2.INTER_NEAREST
-                replacement_bg = cv2.resize(replacement_bg_raw, (width, height),
+                image = cv2.resize(image_raw, (width, height),
                     interpolation=interpolation_method)
-                replacement_bg = replacement_bg[...,::-1]
-                replacement_bgs.append(replacement_bg)
+                # BGR to RGB
+                image[:,:,0], image[:,:,2] = image[:,:,2], image[:,:,0].copy()
+                images.append(image)
 
-            config["replacement_mtime"] = os.stat(image_name).st_mtime
+            config[imageset_name + "_mtime"] = os.stat(image_name).st_mtime
 
-            for i in range(len(replacement_bgs)):
+            for i in range(len(images)):
                 for image_filter in image_filters:
-                    replacement_bgs[i] = image_filter(replacement_bgs[i])
+                    try:
+                        images[i] = image_filter(images[i])
+                    except TypeError:
+                        # caused by a wrong number of arguments in the config
+                        pass
             print("Finished loading background")
 
-        return replacement_bgs
+        return images
 
     except OSError:
         return None
 
-def filter_grayscale(frame):
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+def get_imagefilters(filter_list):
+    image_filters = []
+    for filters_item in filter_list:
+        if type(filters_item) == str:
+            image_filters.append(filters.get_filter(filters_item))
+        if type(filters_item) == list:
+            filter_name = filters_item[0]
 
-def filter_blur(frame, intensity):
-    return cv2.blur(frame, (intensity, intensity))
+            params = filters_item[1:]
+            args = []
+            kwargs = {}
+            if len(params) == 1 and type(params[0]) == list:
+                # ["filtername", ["value1", "value2"]]
+                args = params[0]
+            elif len(params) == 1 and type(params[0]) == dict:
+                # ["filtername", {param1: "value1", "param2": "value2"}]
+                kwargs = params[0]
+            else:
+                # ["filtername", "value1", "value2"]
+                args = params
+
+            _image_filter = filters.get_filter(filter_name)
+            image_filters.append(
+                lambda frame: _image_filter(frame, *args, **kwargs)
+            )
+    return image_filters
 
 ### Global variables ###
 
 # Background frames and the current index in the list
 # when the background is a animation
 replacement_bgs = None
-replacement_bgs_idx = 0
+
+# Overlays
+overlays = None
 
 # The last mask frames are kept to average the actual mask
 # to reduce flickering
@@ -154,9 +182,10 @@ fakewebcam = FakeWebcam(config.get("virtual_video_device"), width, height)
 
 output_stride = 16
 internal_resolution = 0.5
+multiplier = 0.5
 
 model_path = 'bodypix_mobilenet_float_{0:03d}_model-stride{1}'.format(
-    int(100 * internal_resolution), output_stride)
+    int(100 * multiplier), output_stride)
 
 # Load the tensorflow model
 print("Loading model...")
@@ -170,7 +199,7 @@ output_tensor_names = tfjs.util.get_output_tensors(graph)
 input_tensor = graph.get_tensor_by_name(input_tensor_names[0])
 
 def mainloop():
-    global config, masks, replacement_bgs, replacement_bgs_idx
+    global config, masks, replacement_bgs, overlays
     config = load_config(config)
     success, frame = cap.read()
     if not success:
@@ -182,18 +211,13 @@ def mainloop():
     if config.get("flip_vertical"):
         frame = cv2.flip(frame, 0)
 
-    blur_background_value = config.get("blur_background", 0)
-    grayscale_background = config.get("grayscale_background", False)
-    image_filters = []
-    if blur_background_value:
-        image_filters.append(
-            lambda frame: filter_blur(frame, blur_background_value))
-    if grayscale_background:
-        image_filters.append(filter_grayscale)
+    image_filters = get_imagefilters(config.get("background_filters", []))
 
-    image_name = config.get("image_name", "background.jpg")
-    replacement_bgs = load_replacement_bgs(replacement_bgs, image_name,
-        height, width, image_filters)
+    image_name = config.get("background_image", "background.jpg")
+    replacement_bgs = load_images(replacement_bgs, image_name,
+        height, width, "replacement_bgs",
+        config.get("background_interpolation_method"),
+        image_filters)
 
     frame = frame[...,::-1]
     if replacement_bgs is None:
@@ -201,9 +225,13 @@ def mainloop():
             fakewebcam.schedule_frame(frame)
             return
 
-        replacement_bg = frame
+        replacement_bg = np.copy(frame)
         for image_filter in image_filters:
-            replacement_bg = image_filter(replacement_bg)
+            try:
+                replacement_bg = image_filter(replacement_bg)
+            except TypeError:
+                # caused by a wrong number of arguments in the config
+                pass
 
         replacement_bgs = [replacement_bg]
 
@@ -212,11 +240,8 @@ def mainloop():
     target_height, target_width = to_input_resolution_height_and_width(
         internal_resolution, output_stride, input_height, input_width)
 
-    img = Image.fromarray(frame)
-    resized_frame = tf.keras.preprocessing.image.img_to_array(img, dtype=np.float32)
-
-    padT, padB, padL, padR = calc_padding(resized_frame, target_height, target_width)
-    resized_frame = tf.image.resize_with_pad(resized_frame, target_height, target_width,
+    padT, padB, padL, padR = calc_padding(frame, target_height, target_width)
+    resized_frame = tf.image.resize_with_pad(frame, target_height, target_width,
             method=tf.image.ResizeMethod.BILINEAR)
 
     resized_height, resized_width = resized_frame.shape[:2]
@@ -262,15 +287,55 @@ def mainloop():
     mask /= 255.
     mask_inv = 1.0 - mask
 
+    # Filter the foreground
+    image_filters = get_imagefilters(config.get("foreground_filters", []))
+    for image_filter in image_filters:
+        try:
+            frame = image_filter(frame)
+        except TypeError:
+            # caused by a wrong number of arguments in the config
+            pass
+
+    replacement_bgs_idx = config.get("replacement_bgs_idx", 0)
     for c in range(3):
-        frame[:,:,c] = frame[:,:,c] * (mask) + \
+        frame[:,:,c] = frame[:,:,c] * mask + \
             replacement_bgs[replacement_bgs_idx][:,:,c] * mask_inv
 
-    replacement_bgs_idx = (replacement_bgs_idx + 1) % len(replacement_bgs)
+    if time.time() - config.get("last_frame_bg", 0) > 1.0 / config.get("background_fps", 1):
+        config["replacement_bgs_idx"] = (replacement_bgs_idx + 1) % len(replacement_bgs)
+        config["last_frame_bg"] = time.time()
+
+    # Filter the result
+    image_filters = get_imagefilters(config.get("result_filters", []))
+    for image_filter in image_filters:
+        try:
+            frame = image_filter(frame)
+        except TypeError:
+            # caused by a wrong number of arguments in the config
+            pass
+
+    overlays_idx = config.get("overlays_idx", 0)
+    overlays = load_images(overlays, config.get("overlay_image", ""), height, width,
+        "overlays", get_imagefilters(config.get("overlay_filters", [])))
+
+    if overlays:
+        overlay = overlays[overlays_idx]
+        assert(overlay.shape[2] == 4) # The image has an alpha channel
+        for c in range(3):
+            frame[:,:,c] = frame[:,:,c] * (1.0 - overlay[:,:,3] / 255.0) + \
+                overlay[:,:,c] * (overlay[:,:,3] / 255.0)
+
+        if time.time() - config.get("last_frame_overlay", 0) > 1.0 / config.get("overlay_fps", 1):
+            config["overlays_idx"] = (overlays_idx + 1) % len(overlays)
+            config["last_frame_overlay"] = time.time()
 
     if config.get("debug_show_mask", False):
-        frame = np.array(mask_img[:,:,:])
+        frame[:,:,0] = mask * 255
+        frame[:,:,1] = mask * 255
+        frame[:,:,2] = mask * 255
+
     fakewebcam.schedule_frame(frame)
+    last_frame_time = time.time()
 
 while True:
     try:
