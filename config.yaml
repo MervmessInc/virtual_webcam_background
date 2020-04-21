@@ -1,0 +1,14 @@
+width: 960
+height: 540
+segmentation_threshold: 0.75
+blur: 15
+erode: 50
+dilate: 45
+background_filters: []
+foreground_filters: [holo]
+result_filters: []
+background_image: "background.jpg"
+debug_show_mask: false
+#virtual_video_device: "/dev/video2"
+real_video_device: 0
+average_masks: 3
