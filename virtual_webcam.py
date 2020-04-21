@@ -12,6 +12,8 @@ import yaml
 import time
 from pyfakewebcam import FakeWebcam
 
+from scipy import ndimage
+
 from bodypix_functions import calc_padding
 from bodypix_functions import scale_and_crop_to_input_tensor_shape
 from bodypix_functions import to_input_resolution_height_and_width
@@ -31,6 +33,7 @@ config = {
     "real_video_device": "/dev/video0",
     "average_masks": 3
 }
+
 
 def load_config(oldconfig):
     """
@@ -54,8 +57,9 @@ def load_config(oldconfig):
         pass
     return config
 
+
 def load_images(images, image_name, height, width, imageset_name,
-        interpolation_method="NEAREST", image_filters=[]):
+                interpolation_method="NEAREST", image_filters=[]):
     """
         Load and preprocess image(s)
         image_name must be either the path to an image file or
@@ -93,17 +97,14 @@ def load_images(images, image_name, height, width, imageset_name,
 
             for i in range(len(images)):
                 for image_filter in image_filters:
-                    try:
-                        images[i] = image_filter(images[i])
-                    except TypeError:
-                        # caused by a wrong number of arguments in the config
-                        pass
+                    images[i] = image_filter(frame=images[i])
             print("Finished loading background")
 
         return images
 
     except OSError:
         return None
+
 
 def get_imagefilters(filter_list):
     image_filters = []
@@ -114,22 +115,29 @@ def get_imagefilters(filter_list):
             filter_name = filters_item[0]
 
             params = filters_item[1:]
-            args = []
-            kwargs = {}
+            _args = []
+            _kwargs = {}
             if len(params) == 1 and type(params[0]) == list:
                 # ["filtername", ["value1", "value2"]]
-                args = params[0]
+                _args = params[0]
             elif len(params) == 1 and type(params[0]) == dict:
                 # ["filtername", {param1: "value1", "param2": "value2"}]
-                kwargs = params[0]
+                _kwargs = params[0]
             else:
                 # ["filtername", "value1", "value2"]
-                args = params
+                _args = params
 
             _image_filter = filters.get_filter(filter_name)
-            image_filters.append(
-                lambda frame: _image_filter(frame, *args, **kwargs)
-            )
+            def filter_with_parameters(*args, **kwargs):
+                args = list(args)
+                for arg in _args:
+                    args.append(arg)
+                for key in _kwargs:
+                    if not key in kwargs:
+                        kwargs[key] = _kwargs[key]
+                return _image_filter(*args, **kwargs)
+
+            image_filters.append(filter_with_parameters)
     return image_filters
 
 ### Global variables ###
@@ -198,6 +206,7 @@ input_tensor_names = tfjs.util.get_input_tensors(graph)
 output_tensor_names = tfjs.util.get_output_tensors(graph)
 input_tensor = graph.get_tensor_by_name(input_tensor_names[0])
 
+
 def mainloop():
     global config, masks, replacement_bgs, overlays
     config = load_config(config)
@@ -220,18 +229,10 @@ def mainloop():
         image_filters)
 
     frame = frame[...,::-1]
-    if replacement_bgs is None:
-        if len(image_filters) == 0:
-            fakewebcam.schedule_frame(frame)
-            return
-
+    if not replacement_bgs:
         replacement_bg = np.copy(frame)
         for image_filter in image_filters:
-            try:
-                replacement_bg = image_filter(replacement_bg)
-            except TypeError:
-                # caused by a wrong number of arguments in the config
-                pass
+            replacement_bg = image_filter(frame=replacement_bg)
 
         replacement_bgs = [replacement_bg]
 
@@ -241,8 +242,11 @@ def mainloop():
         internal_resolution, output_stride, input_height, input_width)
 
     padT, padB, padL, padR = calc_padding(frame, target_height, target_width)
-    resized_frame = tf.image.resize_with_pad(frame, target_height, target_width,
-            method=tf.image.ResizeMethod.BILINEAR)
+    resized_frame = tf.image.resize_with_pad(
+        frame,
+        target_height, target_width,
+        method=tf.image.ResizeMethod.BILINEAR
+    )
 
     resized_height, resized_width = resized_frame.shape[:2]
 
@@ -276,14 +280,21 @@ def mainloop():
     num_average_masks = max(1, config.get("average_masks", 3))
     masks = masks[:num_average_masks]
     mask = np.mean(masks, axis=0)
-
     mask *= 255
-    if config["dilate"]:
-        mask = cv2.dilate(mask, np.ones((config["dilate"], config["dilate"]), np.uint8), iterations=1)
-    if config["erode"]:
-        mask = cv2.erode(mask, np.ones((config["erode"], config["erode"]), np.uint8), iterations=1)
+
+    dilate_value = config.get("dilate", 0)
+    erode_value = config.get("erode", 0)
+    if dilate_value:
+        mask = cv2.dilate(mask,
+            np.ones((dilate_value, dilate_value), np.uint8), iterations=1)
+    if erode_value:
+        mask = cv2.erode(mask,
+            np.ones((config["erode"], config["erode"]), np.uint8),
+            iterations=1)
+
     if config["blur"]:
         mask = cv2.blur(mask, (config["blur"], config["blur"]))
+
     mask /= 255.
     mask_inv = 1.0 - mask
 
@@ -291,7 +302,7 @@ def mainloop():
     image_filters = get_imagefilters(config.get("foreground_filters", []))
     for image_filter in image_filters:
         try:
-            frame = image_filter(frame)
+            frame = image_filter(frame=frame)
         except TypeError:
             # caused by a wrong number of arguments in the config
             pass
@@ -301,22 +312,46 @@ def mainloop():
         frame[:,:,c] = frame[:,:,c] * mask + \
             replacement_bgs[replacement_bgs_idx][:,:,c] * mask_inv
 
-    if time.time() - config.get("last_frame_bg", 0) > 1.0 / config.get("background_fps", 1):
-        config["replacement_bgs_idx"] = (replacement_bgs_idx + 1) % len(replacement_bgs)
+    time_since_last_frame = time.time() - config.get("last_frame_bg", 0)
+    if time_since_last_frame > 1.0 / config.get("background_fps", 1):
+        config["replacement_bgs_idx"] = \
+            (replacement_bgs_idx + 1) % len(replacement_bgs)
         config["last_frame_bg"] = time.time()
 
     # Filter the result
     image_filters = get_imagefilters(config.get("result_filters", []))
     for image_filter in image_filters:
         try:
-            frame = image_filter(frame)
+            frame = image_filter(frame=frame)
         except TypeError:
             # caused by a wrong number of arguments in the config
             pass
 
     overlays_idx = config.get("overlays_idx", 0)
-    overlays = load_images(overlays, config.get("overlay_image", ""), height, width,
-        "overlays", get_imagefilters(config.get("overlay_filters", [])))
+    overlays = load_images(overlays, config.get("overlay_image", ""),
+        height, width, "overlays",
+        get_imagefilters(config.get("overlay_filters", [])))
+
+    center_of_mass = np.array(ndimage.center_of_mass(mask))
+    # Attribution: http://cliparts.co/angel-halo-pictures
+    halo = cv2.imread("halo.png", cv2.IMREAD_UNCHANGED)
+    halo = cv2.resize(halo, (200, 100))
+    center_of_halo = np.array([halo.shape[0] / 2, halo.shape[1] / 2])
+    coord_from = np.clip(center_of_mass - center_of_halo,
+        np.array([0,0]), np.array(frame.shape[:2])).astype(int)
+    coord_to = np.clip(center_of_mass + center_of_halo,
+        np.array([0, 0]), np.array(frame.shape[:2])).astype(int)
+
+    coord_from[0] = max(coord_from[0] - 500, 0)
+    coord_to[0] = coord_from[0] + halo.shape[0]
+
+    overlay = halo
+    overlay[:,:,0], overlay[:,:,2] = overlay[:,:,2], overlay[:,:,0].copy()
+    for c in range(3):
+        # TODO: overlay must be clipped as well
+        print("test")
+        frame[coord_from[0]:coord_to[0],coord_from[1]:coord_to[1],c] = frame[coord_from[0]:coord_to[0],coord_from[1]:coord_to[1],c] * (1.0 - overlay[:,:,3] / 255.0) + \
+            overlay[:,:,c] * (overlay[:,:,3] / 255.0)
 
     if overlays:
         overlay = overlays[overlays_idx]
@@ -325,7 +360,8 @@ def mainloop():
             frame[:,:,c] = frame[:,:,c] * (1.0 - overlay[:,:,3] / 255.0) + \
                 overlay[:,:,c] * (overlay[:,:,3] / 255.0)
 
-        if time.time() - config.get("last_frame_overlay", 0) > 1.0 / config.get("overlay_fps", 1):
+        time_since_last_frame = time.time() - config.get("last_frame_overlay", 0)
+        if time_since_last_frame > 1.0 / config.get("overlay_fps", 1):
             config["overlays_idx"] = (overlays_idx + 1) % len(overlays)
             config["last_frame_overlay"] = time.time()
 
