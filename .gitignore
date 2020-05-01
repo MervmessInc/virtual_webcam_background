@@ -10,6 +10,7 @@ __pycache__
 venv/
 .history/
 background.jpg
+<<<<<<< HEAD
 at-at_cockpit_II.jpg
 x-wing_cockpit.jpg
 dark-star-1974-004.jpg
@@ -28,3 +29,5 @@ venv/
 .history/
 __pycache__/
 >>>>>>> parent of a788e26... Light clean up
+=======
+>>>>>>> parent of 43bc790... Small fixes
