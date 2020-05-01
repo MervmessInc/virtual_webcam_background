@@ -150,4 +150,3 @@ The needed preprocessing for resnet50 is included as a comment in the source cod
 - [Linux-Fake-Background-Webcam](https://github.com/fangfufu/Linux-Fake-Background-Webcam) is a direct implementation of the blog post using docker and nodejs in addition to python.
 - [simple\_bodypix\_python](https://github.com/ajaichemmanam/simple_bodypix_python) was the base for an earlier version of the script.
 - The functions in `bodypix_functions.py` are adapted from the [body-pix](https://github.com/tensorflow/tfjs-models/tree/master/body-pix) nodejs module.
-- [tfjs-to-tf](https://github.com/patlevin/tfjs-to-tf)

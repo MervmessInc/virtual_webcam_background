@@ -3,6 +3,7 @@ bodypix_mobilenet_float_050_model-stride16
 bodypix_mobilenet_float_075_model-stride16
 bodypix_mobilenet_float_100_model-stride16
 config.yaml
+<<<<<<< HEAD
 __pycache__
 
 venv/
@@ -14,3 +15,9 @@ dark-star-1974-004.jpg
 dark-star-1974-002.jpg
 at-at_cockpit.jpg
 
+=======
+
+venv/
+.history/
+__pycache__/
+>>>>>>> parent of a788e26... Light clean up
