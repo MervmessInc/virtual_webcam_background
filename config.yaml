@@ -7,7 +7,7 @@ dilate: 45
 background_filters: []
 foreground_filters: [holo]
 result_filters: []
-background_image: "background.jpg"
+background_image: "at-at_cockpit_II.jpg"
 debug_show_mask: false
 #virtual_video_device: "/dev/video2"
 real_video_device: 0
