@@ -4,6 +4,10 @@ import tensorflow as tf
 import cv2
 import sys
 import tfjs_graph_converter as tfjs
+import tfjs_graph_converter.api
+import tfjs_graph_converter.util
+#import tfjs_graph_converter.api as tfjs_api
+#import tfjs_graph_converter.util as tfjs_util
 import numpy as np
 import os
 import stat

@@ -1,5 +1,5 @@
 {
-  "python.pythonPath": "venv\\Scripts\\python.exe",
+  "python.pythonPath": "c:\\dev\\GitHub\\virtual_webcam_background\\venv\\Scripts\\python.exe",
   // Pylint imports modules to effectively identify valid methods and attributes.
   // It was decided that importing c extensions that are not part of the python stdlib
   // is a security risk and could introduce malicious code.

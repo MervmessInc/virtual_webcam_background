@@ -3,31 +3,14 @@ bodypix_mobilenet_float_050_model-stride16
 bodypix_mobilenet_float_075_model-stride16
 bodypix_mobilenet_float_100_model-stride16
 config.yaml
-<<<<<<< HEAD
-<<<<<<< HEAD
 __pycache__
 
 venv/
 .history/
 background.jpg
-<<<<<<< HEAD
 at-at_cockpit_II.jpg
 x-wing_cockpit.jpg
 dark-star-1974-004.jpg
 dark-star-1974-002.jpg
 at-at_cockpit.jpg
 
-=======
-
-venv/
-.history/
-__pycache__/
->>>>>>> parent of a788e26... Light clean up
-=======
-
-venv/
-.history/
-__pycache__/
->>>>>>> parent of a788e26... Light clean up
-=======
->>>>>>> parent of 43bc790... Small fixes
