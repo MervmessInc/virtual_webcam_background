@@ -6,6 +6,8 @@ Tensorflow with [BodyPix](https://blog.tensorflow.org/2019/11/updated-bodypix-2.
 
 As the script creates a virtual webcam device it works with any program that can use a v4l2 webcam.
 
+See [virtual-webcam.com](https://www.virtual-webcam.com) for more information, image packs and more.
+
 ## Installation
 
 The program needs python3 and is tested with python 3.7.
@@ -13,11 +15,6 @@ The program needs python3 and is tested with python 3.7.
 Install the requirements:
 
     pip install -r requirements.txt
-
-Due to packaging issues, you need to install `tfjs-to-tf` using
-
-    pip install tensorflowjs
-    pip install "git+https://github.com/patlevin/tfjs-to-tf.git@v0.5.0"
 
 Download the bodypix model:
 
@@ -57,8 +54,6 @@ except for `width` and `height` as the webcam must be reinitialized to change th
 - `real_video_device`: The video device of your webcam, e.g. `/dev/video0`.
 - `average_masks`: Number of masks to average. A higher number will result in afterimages,
   a smaller number in flickering at the boundary between foreground and background.
-- `flip_horizontal`: Flip the input image horizontally.
-- `flip_vertical`: Flip the input image vertically.
 - `background_interpolation_method`: Interpolation method to use. Currently supported methods
   are `BILINEAR` and `NEAREST`. Usually `BILINEAR` is an good option, but for using pixel art
   backgrounds `NEAREST` may look better.
@@ -75,25 +70,47 @@ The `background_filters` option is a list of filters that will be applied after 
 
 A simple example that converts the background to grayscale and blurs it:
 
-    - `background_filters = ["grayscale", "blur"]`
+```
+- background_filters = ["grayscale", "blur"]
+```
 
 Some filters have arguments. To change the blur value in the filter list above, use
 
-    - `background_filters = ["grayscale", ["blur", 10, 10]]`
+```
+- background_filters = ["grayscale", ["blur", 10, 10]]
+```
 
 Alternative syntax variants:
 
-    - `background_filters = ["grayscale", ["blur", [10, 10]]]`
-    - `background_filters = ["grayscale", ["blur", {intensity_x: 10, intensity_y: 10}]]`
+```
+- background_filters = ["grayscale", ["blur", [10, 10]]]
+- background_filters = ["grayscale", ["blur", {intensity_x: 10, intensity_y: 10}]]
+```
 
 ### Filters
 
 The current filters and their options are:
 
-- `blur`: Blur the image.
-  - `intensity_x`: The intensity in x direction.
-  - `intensity_y`: The intensity in y direction. When only `intensity_x` is given, it will be used for `intensity_y` as well.
+- `blur`: Blur the image.i
+  - `intensity_x`: The intensity in the x direction.
+  - `intensity_y`: The intensity in the y direction. When only `intensity_x` is given, it will be used for `intensity_y` as well.
+- `gaussian_blur`: Blur the image using a Gaussian blur. It looks better than normal box blur, but is more CPU intensive.
+  - `intensity_x`: The intensity in the x direction. Must be an odd value: even values are bumped to the next odd value.
+  - `intensity_y`: The intensity in the y direction. Must be an odd value: even values are bumped to the next odd value. When only `intensity_x` is given, it will be used for `intensity_y` as well.
 - `grayscale`: Convert the image into a grayscale image.
+- `roll`: move an image with a constant speed. This is mostly useful for overlays.
+  - `speed_x`: Speed in x direction.
+  - `speed_y`: Speed in y direction.
+- `change_alpha`: Change the transparency of an image.
+  - `change_alpha`: Alpha value to add (between `-255` and `255`)
+  - `alpha_min`, `alpha_max`: Transparency levels to clip the resulting alpha value.
+- `single_color`: Change the image to grayscale and then color it with a given color.
+  - `r`, `g`, `b`: RGB values.
+- `color_filter`: Change the color levels by multiplying the RGB values with a factor between `0` and `255`.
+  - `r`, `g`, `b`: The factors for the colors red/green/blue.
+- `flip`: Flip the image horizontally or vertically.
+  - `horizontal`: Flip horizontally.
+  - `vertical`: Flip vertically.
 
 ## Animations
 

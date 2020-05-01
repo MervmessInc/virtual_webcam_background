@@ -3,12 +3,9 @@
 import tensorflow as tf
 import cv2
 import sys
-import tfjs_graph_converter as tfjs
+import tfjs_graph_converter.api as tfjs_api
+import tfjs_graph_converter.util as tfjs_util
 import numpy as np
-import os
-import stat
-import glob
-import yaml
 import time
 from pyfakewebcam import FakeWebcam
 
@@ -18,127 +15,14 @@ from bodypix_functions import calc_padding
 from bodypix_functions import scale_and_crop_to_input_tensor_shape
 from bodypix_functions import to_input_resolution_height_and_width
 from bodypix_functions import to_mask_tensor
+
 import filters
+from loader import load_config, load_images
 
 # Default config values
-config = {
-    "width": None,
-    "height": None,
-    "erode": 0,
-    "blur": 0,
-    "segmentation_threshold": 0.75,
-    "blur_background": 0,
-    "background_image": "background.jpg",
-    "virtual_video_device": "/dev/video2",
-    "real_video_device": "/dev/video0",
-    "average_masks": 3
-}
+config = {}
 
-
-def load_config(oldconfig):
-    """
-        Load the config file. This only reads the file,
-        when its mtime is changed.
-    """
-
-    config = oldconfig
-    try:
-        if os.stat("config.yaml").st_mtime != config.get("mtime"):
-            config["mtime"] = os.stat("config.yaml").st_mtime
-            with open("config.yaml", "r") as configfile:
-                yconfig = yaml.load(configfile, Loader=yaml.SafeLoader)
-                for key in yconfig:
-                    config[key] = yconfig[key]
-            # Force image reload
-            for key in config:
-                if key.endswith("_mtime"):
-                    config[key] = 0
-    except OSError:
-        pass
-    return config
-
-
-def load_images(images, image_name, height, width, imageset_name,
-                interpolation_method="NEAREST", image_filters=[]):
-    """
-        Load and preprocess image(s)
-        image_name must be either the path to an image file or
-        the path to an folder containing multiple files that should be
-        played as animation.
-        imageset_name is an unique name that is used in the config to store
-        values like the mtime
-        The function only reloads the image(s) when the mtime of the file
-        or folder is changed.
-    """
-    try:
-        replacement_stat = os.stat(image_name)
-        if replacement_stat.st_mtime != config.get(imageset_name + "_mtime"):
-            print("Loading images {0} ...".format(image_name))
-            config[imageset_name + "_idx"] = 0
-            filenames = [image_name]
-            if stat.S_ISDIR(replacement_stat.st_mode):
-                filenames = glob.glob(filenames[0] + "/*.*")
-                if not filenames:
-                    return None
-
-            images = []
-            for filename in filenames:
-                image_raw = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
-                interpolation_method = cv2.INTER_LINEAR
-                if interpolation_method == "NEAREST":
-                    interpolation_method = cv2.INTER_NEAREST
-                image = cv2.resize(image_raw, (width, height),
-                    interpolation=interpolation_method)
-                # BGR to RGB
-                image[:,:,0], image[:,:,2] = image[:,:,2], image[:,:,0].copy()
-                images.append(image)
-
-            config[imageset_name + "_mtime"] = os.stat(image_name).st_mtime
-
-            for i in range(len(images)):
-                for image_filter in image_filters:
-                    images[i] = image_filter(frame=images[i])
-            print("Finished loading background")
-
-        return images
-
-    except OSError:
-        return None
-
-
-def get_imagefilters(filter_list):
-    image_filters = []
-    for filters_item in filter_list:
-        if type(filters_item) == str:
-            image_filters.append(filters.get_filter(filters_item))
-        if type(filters_item) == list:
-            filter_name = filters_item[0]
-
-            params = filters_item[1:]
-            _args = []
-            _kwargs = {}
-            if len(params) == 1 and type(params[0]) == list:
-                # ["filtername", ["value1", "value2"]]
-                _args = params[0]
-            elif len(params) == 1 and type(params[0]) == dict:
-                # ["filtername", {param1: "value1", "param2": "value2"}]
-                _kwargs = params[0]
-            else:
-                # ["filtername", "value1", "value2"]
-                _args = params
-
-            _image_filter = filters.get_filter(filter_name)
-            def filter_with_parameters(*args, **kwargs):
-                args = list(args)
-                for arg in _args:
-                    args.append(arg)
-                for key in _kwargs:
-                    if not key in kwargs:
-                        kwargs[key] = _kwargs[key]
-                return _image_filter(*args, **kwargs)
-
-            image_filters.append(filter_with_parameters)
-    return image_filters
+data = {}
 
 ### Global variables ###
 
@@ -148,13 +32,14 @@ replacement_bgs = None
 
 # Overlays
 overlays = None
+background_overlays = None
 
 # The last mask frames are kept to average the actual mask
 # to reduce flickering
 masks = []
 
 # Load the config
-config = load_config(config)
+config = load_config(data)
 
 ### End global variables ####
 
@@ -197,44 +82,34 @@ model_path = 'bodypix_mobilenet_float_{0:03d}_model-stride{1}'.format(
 
 # Load the tensorflow model
 print("Loading model...")
-graph = tfjs.api.load_graph_model(model_path)  # downloaded from the link above
+graph = tfjs_api.load_graph_model(model_path)
 print("done.")
 
 # Setup the tensorflow session
 sess = tf.compat.v1.Session(graph=graph)
-input_tensor_names = tfjs.util.get_input_tensors(graph)
-output_tensor_names = tfjs.util.get_output_tensors(graph)
+
+input_tensor_names = tfjs_util.get_input_tensors(graph)
+output_tensor_names = tfjs_util.get_output_tensors(graph)
 input_tensor = graph.get_tensor_by_name(input_tensor_names[0])
 
 
 def mainloop():
-    global config, masks, replacement_bgs, overlays
-    config = load_config(config)
+    global config, masks, replacement_bgs, overlays, background_overlays
+    config = load_config(data, config)
     success, frame = cap.read()
     if not success:
         print("Error getting a webcam image!")
         sys.exit(1)
-
-    if config.get("flip_horizontal"):
-        frame = cv2.flip(frame, 1)
-    if config.get("flip_vertical"):
-        frame = cv2.flip(frame, 0)
-
-    image_filters = get_imagefilters(config.get("background_filters", []))
+    # BGR to RGB
+    frame = frame[...,::-1]
 
     image_name = config.get("background_image", "background.jpg")
     replacement_bgs = load_images(replacement_bgs, image_name,
-        height, width, "replacement_bgs",
-        config.get("background_interpolation_method"),
-        image_filters)
+        height, width, "replacement_bgs", data,
+        config.get("background_interpolation_method"))
 
-    frame = frame[...,::-1]
     if not replacement_bgs:
-        replacement_bg = np.copy(frame)
-        for image_filter in image_filters:
-            replacement_bg = image_filter(frame=replacement_bg)
-
-        replacement_bgs = [replacement_bg]
+        replacement_bgs = [np.copy(frame)]
 
     input_height, input_width = frame.shape[:2]
 
@@ -270,7 +145,7 @@ def mainloop():
     )
 
     mask = to_mask_tensor(scaled_segment_scores,
-        config["segmentation_threshold"])
+        config.get("segmentation_threshold", 0.75))
     mask = tf.dtypes.cast(mask, tf.int32)
     mask = np.reshape(mask, mask.shape[:2])
 
@@ -280,57 +155,85 @@ def mainloop():
     num_average_masks = max(1, config.get("average_masks", 3))
     masks = masks[:num_average_masks]
     mask = np.mean(masks, axis=0)
-    mask *= 255
+    mask = (mask * 255).astype(np.uint8)
 
     dilate_value = config.get("dilate", 0)
     erode_value = config.get("erode", 0)
+    blur_value = config.get("blur", 0)
+
     if dilate_value:
         mask = cv2.dilate(mask,
             np.ones((dilate_value, dilate_value), np.uint8), iterations=1)
     if erode_value:
         mask = cv2.erode(mask,
-            np.ones((config["erode"], config["erode"]), np.uint8),
-            iterations=1)
+            np.ones((erode_value, erode_value),
+            np.uint8), iterations=1)
+    if blur_value:
+        mask = cv2.blur(mask, (blur_value, blur_value))
 
-    if config["blur"]:
-        mask = cv2.blur(mask, (config["blur"], config["blur"]))
+    # Foreground (with mask)
+    foreground = np.append(frame, np.expand_dims(mask, axis=2), axis=2)
+    foreground = filters.apply_filters(foreground,
+            filters.get_filters(config.get("foreground_filters", [])))
 
+    # Background (without mask)
+    replacement_bgs_idx = data.get("replacement_bgs_idx", 0)
+    background = np.copy(replacement_bgs[replacement_bgs_idx])
+
+    background = filters.apply_filters(background,
+            filters.get_filters(config.get("background_filters", [])))
+
+    background_overlays_idx = data.get("background_overlays_idx", 0)
+    background_overlays = load_images(background_overlays,
+        config.get("background_overlay_image", ""),
+        height, width, "overlays", data)
+
+    # Background overlays
+    if background_overlays:
+        background_overlay = np.copy(
+                background_overlays[background_overlays_idx])
+
+        # Filter the overlay
+        background_overlay = filters.apply_filters(background_overlay,
+            filters.get_filters(config.get("background_overlay_filters", [])))
+
+        # The image has an alpha channel
+        assert(background_overlay.shape[2] == 4)
+
+        for c in range(3):
+            background[:,:,c] = background[:,:,c] * \
+                (1.0 - background_overlay[:,:,3] / 255.0) + \
+                background_overlay[:,:,c] * (background_overlay[:,:,3] / 255.0)
+
+        time_since_last_frame = time.time() - \
+            data.get("last_frame_background_overlay", 0)
+        if time_since_last_frame > 1.0 / \
+                config.get("background_overlay_fps", 1):
+            data["background_overlays_idx"] = \
+                (background_overlays_idx + 1) % len(background_overlays)
+            data["last_frame_background_overlay"] = time.time()
+
+    # Merge background and foreground (both with mask)
+    mask = foreground[:,:,3].astype(np.float)
     mask /= 255.
+    mask = np.expand_dims(mask, axis=2)
     mask_inv = 1.0 - mask
+    frame = foreground[:,:,:3] * mask + background[:,:,:3] * mask_inv
 
-    # Filter the foreground
-    image_filters = get_imagefilters(config.get("foreground_filters", []))
-    for image_filter in image_filters:
-        try:
-            frame = image_filter(frame=frame)
-        except TypeError:
-            # caused by a wrong number of arguments in the config
-            pass
-
-    replacement_bgs_idx = config.get("replacement_bgs_idx", 0)
-    for c in range(3):
-        frame[:,:,c] = frame[:,:,c] * mask + \
-            replacement_bgs[replacement_bgs_idx][:,:,c] * mask_inv
-
-    time_since_last_frame = time.time() - config.get("last_frame_bg", 0)
+    time_since_last_frame = time.time() - data.get("last_frame_bg", 0)
     if time_since_last_frame > 1.0 / config.get("background_fps", 1):
-        config["replacement_bgs_idx"] = \
+        data["replacement_bgs_idx"] = \
             (replacement_bgs_idx + 1) % len(replacement_bgs)
-        config["last_frame_bg"] = time.time()
+        data["last_frame_bg"] = time.time()
 
     # Filter the result
-    image_filters = get_imagefilters(config.get("result_filters", []))
-    for image_filter in image_filters:
-        try:
-            frame = image_filter(frame=frame)
-        except TypeError:
-            # caused by a wrong number of arguments in the config
-            pass
+    replacement_bg = filters.apply_filters(frame,
+            filters.get_filters(config.get("result_filters", [])))
 
-    overlays_idx = config.get("overlays_idx", 0)
+    # Overlays
+    overlays_idx = data.get("overlays_idx", 0)
     overlays = load_images(overlays, config.get("overlay_image", ""),
-        height, width, "overlays",
-        get_imagefilters(config.get("overlay_filters", [])))
+        height, width, "overlays", data)
 
     center_of_mass = np.array(ndimage.center_of_mass(mask))
     # Attribution: http://cliparts.co/angel-halo-pictures
@@ -354,24 +257,29 @@ def mainloop():
             overlay[:,:,c] * (overlay[:,:,3] / 255.0)
 
     if overlays:
-        overlay = overlays[overlays_idx]
+        overlay = np.copy(overlays[overlays_idx])
+
+        # Filter the overlay
+        overlay = filters.apply_filters(overlay,
+            filters.get_filters(config.get("overlay_filters", [])))
+
         assert(overlay.shape[2] == 4) # The image has an alpha channel
         for c in range(3):
             frame[:,:,c] = frame[:,:,c] * (1.0 - overlay[:,:,3] / 255.0) + \
                 overlay[:,:,c] * (overlay[:,:,3] / 255.0)
 
-        time_since_last_frame = time.time() - config.get("last_frame_overlay", 0)
+        time_since_last_frame = time.time() - data.get("last_frame_overlay", 0)
         if time_since_last_frame > 1.0 / config.get("overlay_fps", 1):
-            config["overlays_idx"] = (overlays_idx + 1) % len(overlays)
-            config["last_frame_overlay"] = time.time()
+            data["overlays_idx"] = (overlays_idx + 1) % len(overlays)
+            data["last_frame_overlay"] = time.time()
 
     if config.get("debug_show_mask", False):
         frame[:,:,0] = mask * 255
         frame[:,:,1] = mask * 255
         frame[:,:,2] = mask * 255
 
+    frame = frame.astype(np.uint8)
     fakewebcam.schedule_frame(frame)
-    last_frame_time = time.time()
 
 while True:
     try:
