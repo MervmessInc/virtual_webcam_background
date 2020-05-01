@@ -99,12 +99,12 @@ def mainloop():
         print("Error getting a webcam image!")
         sys.exit(1)
     # BGR to RGB
-    frame = frame[..., ::-1]
+    frame = frame[...,::-1]
 
     image_name = config.get("background_image", "background.jpg")
     replacement_bgs = load_images(replacement_bgs, image_name,
-                                  height, width, "replacement_bgs", data,
-                                  config.get("background_interpolation_method"))
+        height, width, "replacement_bgs", data,
+        config.get("background_interpolation_method"))
 
     if not replacement_bgs:
         replacement_bgs = [np.copy(frame)]
@@ -133,7 +133,7 @@ def mainloop():
     sample_image = resized_frame[tf.newaxis, ...]
 
     results = sess.run(output_tensor_names,
-                       feed_dict={input_tensor: sample_image})
+        feed_dict={input_tensor: sample_image})
     segments = np.squeeze(results[1], 0)
 
     segment_logits = results[1]
@@ -143,7 +143,7 @@ def mainloop():
     )
 
     mask = to_mask_tensor(scaled_segment_scores,
-                          config.get("segmentation_threshold", 0.75))
+        config.get("segmentation_threshold", 0.75))
     mask = tf.dtypes.cast(mask, tf.int32)
     mask = np.reshape(mask, mask.shape[:2])
 
@@ -161,49 +161,47 @@ def mainloop():
 
     if dilate_value:
         mask = cv2.dilate(mask,
-                          np.ones((dilate_value, dilate_value), np.uint8), iterations=1)
+            np.ones((dilate_value, dilate_value), np.uint8), iterations=1)
     if erode_value:
         mask = cv2.erode(mask,
-                         np.ones((erode_value, erode_value),
-                                 np.uint8), iterations=1)
+            np.ones((erode_value, erode_value),
+            np.uint8), iterations=1)
     if blur_value:
         mask = cv2.blur(mask, (blur_value, blur_value))
 
     # Foreground (with mask)
     foreground = np.append(frame, np.expand_dims(mask, axis=2), axis=2)
     foreground = filters.apply_filters(foreground,
-                                       filters.get_filters(config.get("foreground_filters", [])))
+            filters.get_filters(config.get("foreground_filters", [])))
 
     # Background (without mask)
     replacement_bgs_idx = data.get("replacement_bgs_idx", 0)
     background = np.copy(replacement_bgs[replacement_bgs_idx])
 
     background = filters.apply_filters(background,
-                                       filters.get_filters(config.get("background_filters", [])))
+            filters.get_filters(config.get("background_filters", [])))
 
     background_overlays_idx = data.get("background_overlays_idx", 0)
     background_overlays = load_images(background_overlays,
-                                      config.get(
-                                          "background_overlay_image", ""),
-                                      height, width, "overlays", data)
+        config.get("background_overlay_image", ""),
+        height, width, "overlays", data)
 
     # Background overlays
     if background_overlays:
         background_overlay = np.copy(
-            background_overlays[background_overlays_idx])
+                background_overlays[background_overlays_idx])
 
         # Filter the overlay
         background_overlay = filters.apply_filters(background_overlay,
-                                                   filters.get_filters(config.get("background_overlay_filters", [])))
+            filters.get_filters(config.get("background_overlay_filters", [])))
 
         # The image has an alpha channel
         assert(background_overlay.shape[2] == 4)
 
         for c in range(3):
-            background[:, :, c] = background[:, :, c] * \
-                (1.0 - background_overlay[:, :, 3] / 255.0) + \
-                background_overlay[:, :, c] * \
-                (background_overlay[:, :, 3] / 255.0)
+            background[:,:,c] = background[:,:,c] * \
+                (1.0 - background_overlay[:,:,3] / 255.0) + \
+                background_overlay[:,:,c] * (background_overlay[:,:,3] / 255.0)
 
         time_since_last_frame = time.time() - \
             data.get("last_frame_background_overlay", 0)
@@ -214,11 +212,11 @@ def mainloop():
             data["last_frame_background_overlay"] = time.time()
 
     # Merge background and foreground (both with mask)
-    mask = foreground[:, :, 3].astype(np.float)
+    mask = foreground[:,:,3].astype(np.float)
     mask /= 255.
     mask = np.expand_dims(mask, axis=2)
     mask_inv = 1.0 - mask
-    frame = foreground[:, :, :3] * mask + background[:, :, :3] * mask_inv
+    frame = foreground[:,:,:3] * mask + background[:,:,:3] * mask_inv
 
     time_since_last_frame = time.time() - data.get("last_frame_bg", 0)
     if time_since_last_frame > 1.0 / config.get("background_fps", 1):
@@ -228,24 +226,24 @@ def mainloop():
 
     # Filter the result
     replacement_bg = filters.apply_filters(frame,
-                                           filters.get_filters(config.get("result_filters", [])))
+            filters.get_filters(config.get("result_filters", [])))
 
     # Overlays
     overlays_idx = data.get("overlays_idx", 0)
     overlays = load_images(overlays, config.get("overlay_image", ""),
-                           height, width, "overlays", data)
+        height, width, "overlays", data)
 
     if overlays:
         overlay = np.copy(overlays[overlays_idx])
 
         # Filter the overlay
         overlay = filters.apply_filters(overlay,
-                                        filters.get_filters(config.get("overlay_filters", [])))
+            filters.get_filters(config.get("overlay_filters", [])))
 
-        assert(overlay.shape[2] == 4)  # The image has an alpha channel
+        assert(overlay.shape[2] == 4) # The image has an alpha channel
         for c in range(3):
-            frame[:, :, c] = frame[:, :, c] * (1.0 - overlay[:, :, 3] / 255.0) + \
-                overlay[:, :, c] * (overlay[:, :, 3] / 255.0)
+            frame[:,:,c] = frame[:,:,c] * (1.0 - overlay[:,:,3] / 255.0) + \
+                overlay[:,:,c] * (overlay[:,:,3] / 255.0)
 
         time_since_last_frame = time.time() - data.get("last_frame_overlay", 0)
         if time_since_last_frame > 1.0 / config.get("overlay_fps", 1):
@@ -253,13 +251,12 @@ def mainloop():
             data["last_frame_overlay"] = time.time()
 
     if config.get("debug_show_mask", False):
-        frame[:, :, 0] = mask * 255
-        frame[:, :, 1] = mask * 255
-        frame[:, :, 2] = mask * 255
+        frame[:,:,0] = mask * 255
+        frame[:,:,1] = mask * 255
+        frame[:,:,2] = mask * 255
 
     frame = frame.astype(np.uint8)
     fakewebcam.schedule_frame(frame)
-
 
 while True:
     try:
